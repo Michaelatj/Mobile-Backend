@@ -1,0 +1,13 @@
+PATCH: add analytics call to profile edit save in edit_profile_page.dart
+
+Change: inside FilledButton onPressed, after updateProfile call insert:
+
+final userId = ref.read(authStateProvider).user?.id ?? 'unknown';
+await FirebaseAnalyticsService.logProfileEditEvent(
+  userId: userId,
+  fieldChanged: 'profile',
+  oldValue: '',
+  newValue: _name.text,
+);
+
+This is a helper note; actual code edit will be applied via apply_patch if user confirms.

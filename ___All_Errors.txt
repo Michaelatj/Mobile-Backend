@@ -1,0 +1,23 @@
+CorrelationId: 4d49f687-71c1-4bbf-af66-a68738d4c3b2
+UTC DateTime: 11/13/2025 06:58:41
+
+The following files/folders have not been downloaded
+0. android/.gradle/8.10.2/gc.properties
+1. android/.gradle/8.10.2/dependencies-accessors/gc.properties
+2. android/.gradle/vcs-1/gc.properties
+3. android/app/.cxx/Debug/2p662j25/arm64-v8a/additional_project_files.txt
+4. android/app/.cxx/Debug/2p662j25/arm64-v8a/.cmake/api/v1/query/client-agp/cache-v2
+5. android/app/.cxx/Debug/2p662j25/arm64-v8a/.cmake/api/v1/query/client-agp/cmakeFiles-v1
+6. android/app/.cxx/Debug/2p662j25/arm64-v8a/.cmake/api/v1/query/client-agp/codemodel-v2
+7. android/app/.cxx/Debug/2p662j25/armeabi-v7a/additional_project_files.txt
+8. android/app/.cxx/Debug/2p662j25/armeabi-v7a/.cmake/api/v1/query/client-agp/cache-v2
+9. android/app/.cxx/Debug/2p662j25/armeabi-v7a/.cmake/api/v1/query/client-agp/cmakeFiles-v1
+10. android/app/.cxx/Debug/2p662j25/armeabi-v7a/.cmake/api/v1/query/client-agp/codemodel-v2
+11. android/app/.cxx/Debug/2p662j25/x86/additional_project_files.txt
+12. android/app/.cxx/Debug/2p662j25/x86/.cmake/api/v1/query/client-agp/cache-v2
+13. android/app/.cxx/Debug/2p662j25/x86/.cmake/api/v1/query/client-agp/cmakeFiles-v1
+14. android/app/.cxx/Debug/2p662j25/x86/.cmake/api/v1/query/client-agp/codemodel-v2
+15. android/app/.cxx/Debug/2p662j25/x86_64/additional_project_files.txt
+16. android/app/.cxx/Debug/2p662j25/x86_64/.cmake/api/v1/query/client-agp/cache-v2
+17. android/app/.cxx/Debug/2p662j25/x86_64/.cmake/api/v1/query/client-agp/cmakeFiles-v1
+18. android/app/.cxx/Debug/2p662j25/x86_64/.cmake/api/v1/query/client-agp/codemodel-v2
