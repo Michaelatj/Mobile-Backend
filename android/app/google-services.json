@@ -1,13 +1,13 @@
 {
   "project_info": {
-    "project_number": "620349393151",
-    "project_id": "praktikum-firebase-m06-m07",
-    "storage_bucket": "praktikum-firebase-m06-m07.firebasestorage.app"
+    "project_number": "1076198659521",
+    "project_id": "utsmobilebackend-6385f",
+    "storage_bucket": "utsmobilebackend-6385f.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:620349393151:android:4a54aecb51b1ff003024ca",
+        "mobilesdk_app_id": "1:1076198659521:android:ee165bcf00af0c4fc94b40",
         "android_client_info": {
           "package_name": "com.example.bantuin_silvani"
         }
@@ -15,26 +15,7 @@
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyAftkvf92_cFRpmlTAJktzoaA_HPhiU3AE"
-        }
-      ],
-      "services": {
-        "appinvite_service": {
-          "other_platform_oauth_client": []
-        }
-      }
-    },
-    {
-      "client_info": {
-        "mobilesdk_app_id": "1:620349393151:android:95861988ba6caa4d3024ca",
-        "android_client_info": {
-          "package_name": "com.example.praktikum_mobile_backend"
-        }
-      },
-      "oauth_client": [],
-      "api_key": [
-        {
-          "current_key": "AIzaSyAftkvf92_cFRpmlTAJktzoaA_HPhiU3AE"
+          "current_key": "AIzaSyC9MCgjBwjZ4SVAXfitL4Oj1hbfdETemw4"
         }
       ],
       "services": {
