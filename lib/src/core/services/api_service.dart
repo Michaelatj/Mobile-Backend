@@ -1,5 +1,6 @@
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import '../models/user_role.dart';
 
 class ApiService {
@@ -28,7 +29,7 @@ class ApiService {
               photoUrl: user['photo'],
               locationLabel: user['location'],
               transactions: (user['transactions'] as List?)?.length ?? 0,
-              orders: List<String>.from(user['orders'] as List? ?? []), // Get orders from API
+              orders: List<String>.from(user['orders'] as List? ?? []),
             );
           }
         }
@@ -36,7 +37,7 @@ class ApiService {
       }
       return null;
     } catch (e) {
-      print('[v0] Login error: $e');
+      debugPrint('[API] Login error: $e');
       return null;
     }
   }
@@ -68,67 +69,94 @@ class ApiService {
 
       return response.statusCode == 201;
     } catch (e) {
-      print('[v0] Register error: $e');
+      debugPrint('[API] Register error: $e');
       return false;
     }
   }
 
+  /// FIXED: Proses pembayaran dengan MENJAGA semua data user
   static Future<bool> processPayment({
     required String userId,
     required String invoiceCode,
     required Map<String, dynamic> orderData,
   }) async {
     try {
-      // Get current user data
+      // 1. Get current user data
       final userResponse = await http.get(
         Uri.parse('$_baseUrl$_usersEndpoint/$userId'),
       ).timeout(const Duration(seconds: 10));
 
-      if (userResponse.statusCode != 200) return false;
+      if (userResponse.statusCode != 200) {
+        debugPrint('[API] Failed to get user data: ${userResponse.statusCode}');
+        return false;
+      }
 
-      final user = jsonDecode(userResponse.body);
+      final user = jsonDecode(userResponse.body) as Map<String, dynamic>;
       
-      // Add new transaction
-      final List<dynamic> transactions = user['transactions'] as List? ?? [];
+      // 2. Add new transaction
+      final List<dynamic> transactions = List.from(user['transactions'] as List? ?? []);
       transactions.add({
         'id': invoiceCode,
         'date': DateTime.now().toIso8601String(),
         'amount': orderData['amount'],
         'paymentMethod': orderData['paymentMethod'],
+        'provider': orderData['provider'],
+        'bookingId': orderData['bookingId'],
       });
 
-      // Add new order (invoice code)
-      final List<dynamic> orders = user['orders'] as List? ?? [];
+      // 3. Add new order (invoice code)
+      final List<dynamic> orders = List.from(user['orders'] as List? ?? []);
       orders.add(invoiceCode);
 
-      // Update user with new transactions and orders
+      // 4. Update user - KIRIM SEMUA DATA USER + transactions & orders yang baru
       final updateResponse = await http.put(
         Uri.parse('$_baseUrl$_usersEndpoint/$userId'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'transactions': transactions,
-          'orders': orders,
+          ...user, // ← PENTING: Kirim semua data user yang ada
+          'transactions': transactions, // Override dengan data baru
+          'orders': orders, // Override dengan data baru
         }),
       ).timeout(const Duration(seconds: 10));
 
-      return updateResponse.statusCode == 200;
+      if (updateResponse.statusCode == 200) {
+        debugPrint('[API] Payment processed successfully: $invoiceCode');
+        debugPrint('[API] New transaction count: ${transactions.length}');
+        return true;
+      } else {
+        debugPrint('[API] Failed to update user: ${updateResponse.statusCode}');
+        return false;
+      }
     } catch (e) {
-      print('[v0] Process payment error: $e');
+      debugPrint('[API] Process payment error: $e');
       return false;
     }
   }
 
   static Future<bool> updateUserTransactions(String userId, List<dynamic> transactions) async {
     try {
+      // Get current user data first
+      final userResponse = await http.get(
+        Uri.parse('$_baseUrl$_usersEndpoint/$userId'),
+      ).timeout(const Duration(seconds: 10));
+
+      if (userResponse.statusCode != 200) return false;
+
+      final user = jsonDecode(userResponse.body) as Map<String, dynamic>;
+
+      // Update dengan semua data user
       final response = await http.put(
         Uri.parse('$_baseUrl$_usersEndpoint/$userId'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'transactions': transactions}),
+        body: jsonEncode({
+          ...user, // Kirim semua data user
+          'transactions': transactions, // Override transactions
+        }),
       ).timeout(const Duration(seconds: 10));
 
       return response.statusCode == 200;
     } catch (e) {
-      print('[v0] Update transactions error: $e');
+      debugPrint('[API] Update transactions error: $e');
       return false;
     }
   }
@@ -141,11 +169,13 @@ class ApiService {
 
       if (response.statusCode == 200) {
         final user = jsonDecode(response.body);
-        return (user['transactions'] as List?)?.length ?? 0;
+        final transactions = user['transactions'] as List? ?? [];
+        debugPrint('[API] User $userId has ${transactions.length} transactions');
+        return transactions.length;
       }
       return 0;
     } catch (e) {
-      print('[v0] Get transactions error: $e');
+      debugPrint('[API] Get transactions error: $e');
       return 0;
     }
   }
@@ -161,7 +191,7 @@ class ApiService {
       }
       return [];
     } catch (e) {
-      print('[v0] Get service providers error: $e');
+      debugPrint('[API] Get service providers error: $e');
       return [];
     }
   }

@@ -20,6 +20,7 @@ class AppUser {
   });
 
   AppUser copyWith({
+    String? id, // ← TAMBAHKAN INI
     String? name,
     UserRole? role,
     String? photoUrl,
@@ -28,7 +29,7 @@ class AppUser {
     List<String>? orders, // Added orders to copyWith
   }) {
     return AppUser(
-      id: id,
+      id: id ?? this.id, // ← TAMBAHKAN INI
       name: name ?? this.name,
       role: role ?? this.role,
       photoUrl: photoUrl ?? this.photoUrl,
