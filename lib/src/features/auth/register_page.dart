@@ -2,12 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/state/auth_state.dart';
-import 'role_selection_page.dart';
 import 'login_page.dart';
 import 'provider_onboarding_page.dart';
-import '../../core/models/user_role.dart'; // set role explicitly
 import '../../core/database/user_dao.dart';
-// import '../../core/models/user.dart'; // if you have AppUser model
+import '../../core/services/user_api_service.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import '../../core/services/firebase_analytics_nonblocking.dart';
 
 class RegisterPage extends ConsumerStatefulWidget {
   static const routePath = '/auth/register';
@@ -23,10 +23,11 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
   final _password = TextEditingController();
   final _fullName = TextEditingController();
   final _confirmPassword = TextEditingController();
-  late final textTheme = Theme.of(context).textTheme;
   String _selectedRole = 'customer';
-  bool get _isProvider => _selectedRole == 'provider'; // helper
-  bool get _isCustomer => _selectedRole == 'customer'; // helper
+  bool _isLoading = false;
+
+  bool get _isProvider => _selectedRole == 'provider';
+  bool get _isCustomer => _selectedRole == 'customer';
 
   @override
   void dispose() {
@@ -37,9 +38,248 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
     super.dispose();
   }
 
+  Future<void> _handleRegisterCustomer() async {
+    // First, basic non-empty form validation
+    if (!_formKey.currentState!.validate()) return;
+
+    // Then run sequential client-side validations (email format -> password strength -> password match)
+    final email = _email.text.trim();
+    final password = _password.text;
+    final confirmPassword = _confirmPassword.text;
+    final fullname =
+        _fullName.text.trim().isEmpty ? 'Pengguna' : _fullName.text.trim();
+
+    // 1) Email format check (client-side quick check). Firebase still enforces full email validity.
+    final emailRegex =
+        RegExp(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$');
+    if (!emailRegex.hasMatch(email)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Format email tidak sesuai.')),
+      );
+      return;
+    }
+
+    // 2) Password strength (minimum length)
+    if (password.length < 6) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('Password terlalu pendek (min 6 karakter).')),
+      );
+      return;
+    }
+
+    // 3) Password confirmation
+    if (password != confirmPassword) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Passwords do not match')),
+      );
+      return;
+    }
+
+    setState(() => _isLoading = true);
+    try {
+      // Firebase-first: create Firebase user first
+      // Firebase will validate: email format, password strength, email uniqueness
+      final userCredential = await FirebaseAuth.instance
+          .createUserWithEmailAndPassword(email: email, password: password);
+      final firebaseUser = userCredential.user!;
+      await firebaseUser.updateDisplayName(fullname);
+
+      // Create on MockAPI and include firebaseUid
+      final apiUser = await UserApiService.createUser(
+        name: fullname,
+        email: email,
+        role: _selectedRole,
+        firebaseUid: firebaseUser.uid,
+      );
+
+      // Persist locally (SQLite) for offline fallback (do NOT store plaintext password)
+      final id = apiUser['id'] as String? ??
+          'u_${DateTime.now().millisecondsSinceEpoch}';
+      await UserDao.insertUser({
+        'id': id,
+        'name': fullname,
+        'email': email,
+        'role': _selectedRole,
+        'firebaseUid': firebaseUser.uid,
+        'createdAt': DateTime.now().toIso8601String(),
+      });
+
+      // Non-blocking analytics
+      FirebaseAnalyticsNonBlocking.logLoginEvent(
+        userId: firebaseUser.uid,
+        email: email,
+        loginMethod: 'email-register',
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Register berhasil. Silakan login.')));
+        context.go(LoginPage.routePath);
+      }
+    } on FirebaseAuthException catch (e) {
+      // Map Firebase error codes to friendly messages
+      String message;
+      switch (e.code) {
+        case 'invalid-email':
+          message = 'Format email tidak valid.';
+          break;
+        case 'weak-password':
+          message = 'Password terlalu pendek (min 6 karakter).';
+          break;
+        case 'email-already-in-use':
+          message = 'Email sudah terdaftar. Silakan login.';
+          break;
+        default:
+          message = e.message ?? 'Gagal mendaftar.';
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(message)));
+      }
+    } catch (e) {
+      // If API creation failed after Firebase creation, attempt rollback
+      try {
+        final current = FirebaseAuth.instance.currentUser;
+        if (current != null) {
+          await current.delete();
+          debugPrint('DEBUG: Rolled back Firebase user after API failure');
+        }
+      } catch (rollErr) {
+        debugPrint('WARN: Failed to rollback Firebase user: $rollErr');
+      }
+      debugPrint('ERROR: Register unexpected error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Gagal register: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _handleRegisterProvider() async {
+    // First, basic non-empty form validation
+    if (!_formKey.currentState!.validate()) return;
+
+    // Then run the same sequential client-side validations used for customers
+    final email = _email.text.trim();
+    final password = _password.text;
+    final confirmPassword = _confirmPassword.text;
+    final fullname =
+        _fullName.text.trim().isEmpty ? 'Pengguna' : _fullName.text.trim();
+
+    final emailRegex =
+        RegExp(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$');
+    if (!emailRegex.hasMatch(email)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Format email tidak sesuai.')),
+      );
+      return;
+    }
+
+    if (password.length < 6) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('Password terlalu pendek (min 6 karakter).')),
+      );
+      return;
+    }
+
+    if (password != confirmPassword) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Passwords do not match')),
+      );
+      return;
+    }
+
+    setState(() => _isLoading = true);
+    try {
+      // Create Firebase user first so auth is authoritative
+      final userCredential = await FirebaseAuth.instance
+          .createUserWithEmailAndPassword(email: email, password: password);
+      final firebaseUser = userCredential.user!;
+      await firebaseUser.updateDisplayName(fullname);
+
+      // Create or update API user and include firebaseUid (upsert)
+      final apiUser = await UserApiService.createUser(
+        name: fullname,
+        email: email,
+        role: 'provider',
+        firebaseUid: firebaseUser.uid,
+      );
+
+      // Persist locally (do NOT store plaintext password for provider accounts)
+      final id = apiUser['id'] as String? ??
+          'u_${DateTime.now().millisecondsSinceEpoch}';
+      await UserDao.insertUser({
+        'id': id,
+        'name': fullname,
+        'email': email,
+        'role': 'provider',
+        'firebaseUid': firebaseUser.uid,
+        'createdAt': DateTime.now().toIso8601String(),
+      });
+
+      // Non-blocking analytics
+      FirebaseAnalyticsNonBlocking.logLoginEvent(
+        userId: firebaseUser.uid,
+        email: email,
+        loginMethod: 'email-register-provider',
+      );
+
+      if (mounted) {
+        // Move to provider onboarding details page
+        context.go(ProviderOnboardingPage.routePath);
+      }
+    } on FirebaseAuthException catch (e) {
+      String message;
+      switch (e.code) {
+        case 'invalid-email':
+          message = 'Format email tidak valid.';
+          break;
+        case 'weak-password':
+          message = 'Password terlalu pendek (min 6 karakter).';
+          break;
+        case 'email-already-in-use':
+          message = 'Email sudah terdaftar. Silakan login.';
+          break;
+        default:
+          message = e.message ?? 'Gagal mendaftar.';
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(message)));
+      }
+    } catch (e) {
+      // If API creation failed after Firebase creation, attempt rollback
+      try {
+        final current = FirebaseAuth.instance.currentUser;
+        if (current != null) {
+          await current.delete();
+          debugPrint('DEBUG: Rolled back Firebase user after API failure');
+        }
+      } catch (rollErr) {
+        debugPrint('WARN: Failed to rollback Firebase user: $rollErr');
+      }
+      debugPrint('ERROR: Provider register unexpected error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Gagal register: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final auth = ref.read(authStateProvider.notifier);
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     const logoUrl =
@@ -76,7 +316,7 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
                         padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
                         decoration: BoxDecoration(
                           color: Colors.white,
-                          borderRadius: BorderRadius.circular(22), // was 20
+                          borderRadius: BorderRadius.circular(22),
                           boxShadow: [
                             BoxShadow(
                               color: Colors.black.withOpacity(0.10),
@@ -96,9 +336,9 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
                                   fontWeight: FontWeight.w800,
                                   color: Colors.black,
                                 ),
-                                textAlign: TextAlign.center, //
+                                textAlign: TextAlign.center,
                               ),
-                              const SizedBox(height: 8), //
+                              const SizedBox(height: 8),
                               Text(
                                 'Join BayangIn to book or offer trusted services.',
                                 textAlign: TextAlign.center,
@@ -132,91 +372,52 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
                                 hintText: 'Full name',
                                 keyboardType: TextInputType.name,
                                 validator: (v) => (v == null || v.isEmpty)
-                                    ? 'Required'
+                                    ? 'Please enter your name'
                                     : null,
                                 theme: theme,
-                                prefixIcon: Icons.person_outline, //
+                                prefixIcon: Icons.person_outline,
                               ),
                               const SizedBox(height: 12),
                               _InputField(
                                 controller: _email,
                                 hintText: 'Email',
                                 keyboardType: TextInputType.emailAddress,
-                                validator: (v) =>
-                                    (v == null || v.isEmpty || !v.contains('@'))
-                                        ? 'Enter a valid email'
-                                        : null,
+                                validator: (v) => (v == null || v.isEmpty)
+                                    ? 'Please enter your email'
+                                    : null,
                                 theme: theme,
-                                prefixIcon: Icons.alternate_email, //
+                                prefixIcon: Icons.alternate_email,
                               ),
                               const SizedBox(height: 12),
                               _InputField(
                                 controller: _password,
                                 hintText: 'Password',
                                 obscureText: true,
-                                validator: (v) => (v == null || v.length < 6)
-                                    ? 'At least 6 characters'
+                                validator: (v) => (v == null || v.isEmpty)
+                                    ? 'Please enter a password'
                                     : null,
                                 theme: theme,
-                                prefixIcon: Icons.lock_outline, //
+                                prefixIcon: Icons.lock_outline,
                               ),
                               const SizedBox(height: 12),
                               _InputField(
                                 controller: _confirmPassword,
                                 hintText: 'Confirm password',
                                 obscureText: true,
-                                validator: (v) => (v != _password.text)
-                                    ? 'Passwords do not match'
+                                validator: (v) => (v == null || v.isEmpty)
+                                    ? 'Please confirm your password'
                                     : null,
                                 theme: theme,
-                                prefixIcon: Icons.verified_user_outlined, //
+                                prefixIcon: Icons.verified_user_outlined,
                               ),
                               const SizedBox(height: 20),
                               if (_isCustomer) ...[
                                 SizedBox(
                                   height: 52,
                                   child: FilledButton(
-                                    onPressed: () async {
-                                      if (_formKey.currentState!.validate()) {
-                                        final email = _email.text.trim();
-                                        final password = _password.text;
-                                        final fullname =
-                                            _fullName.text.trim().isEmpty
-                                                ? 'Pengguna'
-                                                : _fullName.text.trim();
-
-                                        // prevent duplicate email
-                                        final exists =
-                                            await UserDao.emailExists(email);
-                                        if (exists) {
-                                          if (context.mounted) {
-                                            ScaffoldMessenger.of(context)
-                                                .showSnackBar(const SnackBar(
-                                                    content: Text(
-                                                        'Email sudah terdaftar')));
-                                          }
-                                          return;
-                                        }
-
-                                        final id =
-                                            'u_${DateTime.now().millisecondsSinceEpoch}';
-                                        await UserDao.insertUser({
-                                          'id': id,
-                                          'name': fullname,
-                                          'email': email,
-                                          'password':
-                                              password, // NOTE: plain for demo only
-                                          'role': _selectedRole,
-                                          'createdAt':
-                                              DateTime.now().toIso8601String(),
-                                        });
-
-                                        if (context.mounted) {
-                                          // setelah register arahkan ke login
-                                          context.go(LoginPage.routePath);
-                                        }
-                                      }
-                                    },
+                                    onPressed: _isLoading
+                                        ? null
+                                        : _handleRegisterCustomer,
                                     style: FilledButton.styleFrom(
                                       shape: RoundedRectangleBorder(
                                           borderRadius:
@@ -224,19 +425,22 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
                                       textStyle: const TextStyle(fontSize: 16),
                                       elevation: 1,
                                     ),
-                                    child: const Text('Register'),
+                                    child: _isLoading
+                                        ? const SizedBox(
+                                            width: 20,
+                                            height: 20,
+                                            child: CircularProgressIndicator(),
+                                          )
+                                        : const Text('Register'),
                                   ),
                                 ),
                               ] else ...[
                                 SizedBox(
                                   height: 52,
                                   child: FilledButton(
-                                    onPressed: () {
-                                      if (_formKey.currentState!.validate()) {
-                                        context.go(
-                                            ProviderOnboardingPage.routePath);
-                                      }
-                                    },
+                                    onPressed: _isLoading
+                                        ? null
+                                        : _handleRegisterProvider,
                                     style: FilledButton.styleFrom(
                                       shape: RoundedRectangleBorder(
                                           borderRadius:
@@ -246,7 +450,13 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
                                           fontSize: 16),
                                       elevation: 1,
                                     ),
-                                    child: const Text('Next'),
+                                    child: _isLoading
+                                        ? const SizedBox(
+                                            width: 20,
+                                            height: 20,
+                                            child: CircularProgressIndicator(),
+                                          )
+                                        : const Text('Next'),
                                   ),
                                 ),
                               ],
@@ -264,7 +474,7 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
                 child: RichText(
                   textAlign: TextAlign.center,
                   text: TextSpan(
-                    style: textTheme.bodySmall?.copyWith(
+                    style: theme.textTheme.bodySmall?.copyWith(
                       color: cs.primary.withOpacity(0.7),
                     ),
                     children: [
@@ -278,7 +488,7 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
                                 horizontal: 4, vertical: 2),
                             child: Text(
                               'Log In',
-                              style: textTheme.bodySmall?.copyWith(
+                              style: theme.textTheme.bodySmall?.copyWith(
                                 color: cs.primary,
                                 fontWeight: FontWeight.w700,
                                 decoration: TextDecoration.underline,
@@ -332,7 +542,7 @@ class _InputField extends StatelessWidget {
     this.obscureText = false,
     this.validator,
     this.keyboardType,
-    this.prefixIcon, //
+    this.prefixIcon,
   });
 
   final TextEditingController controller;
@@ -341,7 +551,7 @@ class _InputField extends StatelessWidget {
   final FormFieldValidator<String>? validator;
   final TextInputType? keyboardType;
   final ThemeData theme;
-  final IconData? prefixIcon; //
+  final IconData? prefixIcon;
 
   @override
   Widget build(BuildContext context) {
@@ -361,7 +571,7 @@ class _InputField extends StatelessWidget {
             const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         prefixIcon: prefixIcon == null
             ? null
-            : Icon(prefixIcon, color: cs.primary.withOpacity(0.7)), //
+            : Icon(prefixIcon, color: cs.primary.withOpacity(0.7)),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
           borderSide: BorderSide(color: Colors.grey.withOpacity(0.4)),

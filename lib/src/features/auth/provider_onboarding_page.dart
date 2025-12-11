@@ -1,6 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart'; // use go_router navigation
 import 'login_page.dart';
+import '../../core/database/provider_dao.dart';
+import '../../core/models/service_provider.dart';
+import '../../core/services/user_api_service.dart';
+import '../../core/database/user_dao.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import '../../core/services/firebase_analytics_nonblocking.dart';
 
 class ProviderOnboardingPage extends StatefulWidget {
   static const routePath = '/auth/provider-onboarding';
@@ -16,6 +22,7 @@ class _ProviderOnboardingPageState extends State<ProviderOnboardingPage> {
   final _categoryCtrl = TextEditingController();
   final _priceCtrl = TextEditingController();
   final _descCtrl = TextEditingController();
+  bool _isSaving = false;
 
   @override
   void dispose() {
@@ -28,10 +35,87 @@ class _ProviderOnboardingPageState extends State<ProviderOnboardingPage> {
 
   Future<void> _finishRegistration() async {
     if (!_formKey.currentState!.validate()) return;
-    // TODO: hook provider-specific onboarding save if available
-
     if (!mounted) return;
-    context.go(LoginPage.routePath);
+
+    setState(() => _isSaving = true);
+    try {
+      // Ensure we have an authenticated Firebase user (created during register)
+      final fbUser = FirebaseAuth.instance.currentUser;
+      if (fbUser == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content:
+                  Text('No authenticated user found. Please log in first.')));
+          context.go(LoginPage.routePath);
+        }
+        return;
+      }
+
+      final name = fbUser.displayName ?? 'Provider';
+      final email = fbUser.email ?? '';
+      final uid = fbUser.uid;
+
+      // Parse price safely
+      int priceFrom = int.tryParse(_priceCtrl.text.trim()) ?? 0;
+
+      // Create local provider record
+      final providerId = 'p_${DateTime.now().millisecondsSinceEpoch}';
+      final serviceProvider = ServiceProvider(
+        id: providerId,
+        name: _serviceNameCtrl.text.trim().isEmpty
+            ? name
+            : _serviceNameCtrl.text.trim(),
+        category: _categoryCtrl.text.trim().isEmpty
+            ? 'General'
+            : _categoryCtrl.text.trim(),
+        rating: 0.0,
+        distanceKm: 0.0,
+        description: _descCtrl.text.trim(),
+        priceFrom: priceFrom,
+      );
+
+      await ProviderDao.insertProvider(serviceProvider);
+
+      // Upsert API user as provider (ensure role and firebaseUid are recorded)
+      final apiUser = await UserApiService.createUser(
+        name: name,
+        email: email,
+        role: 'provider',
+        firebaseUid: uid,
+      );
+
+      // Persist/refresh local user record (do not store plaintext password)
+      final userId = apiUser['id'] as String? ?? 'u_$uid';
+      await UserDao.insertUser({
+        'id': userId,
+        'name': name,
+        'email': email,
+        'role': 'provider',
+        'firebaseUid': uid,
+        'createdAt': DateTime.now().toIso8601String(),
+      });
+
+      // Non-blocking analytics
+      FirebaseAnalyticsNonBlocking.logLoginEvent(
+        userId: uid,
+        email: email,
+        loginMethod: 'provider-onboarding',
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Provider account set up successfully.')));
+        // Navigate to login or home - choose Login to ensure fresh auth flow
+        context.go(LoginPage.routePath);
+      }
+    } catch (e) {
+      debugPrint('ERROR: provider onboarding failed: $e');
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to complete onboarding: $e')));
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
   }
 
   @override
@@ -66,7 +150,8 @@ class _ProviderOnboardingPageState extends State<ProviderOnboardingPage> {
               Transform.translate(
                 offset: const Offset(0, -56),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
                   child: Center(
                     child: ConstrainedBox(
                       constraints: const BoxConstraints(maxWidth: 560),
@@ -86,7 +171,8 @@ class _ProviderOnboardingPageState extends State<ProviderOnboardingPage> {
                                 const SizedBox(height: 12),
                                 Text(
                                   'Set up your service',
-                                  style: theme.textTheme.headlineSmall?.copyWith(
+                                  style:
+                                      theme.textTheme.headlineSmall?.copyWith(
                                     fontWeight: FontWeight.w700,
                                     color: theme.colorScheme.primary,
                                   ),
@@ -96,7 +182,8 @@ class _ProviderOnboardingPageState extends State<ProviderOnboardingPage> {
                                 Text(
                                   'Provide a few details to complete your provider account.',
                                   style: theme.textTheme.bodyMedium?.copyWith(
-                                    color: theme.colorScheme.onSurface.withOpacity(0.7),
+                                    color: theme.colorScheme.onSurface
+                                        .withOpacity(0.7),
                                   ),
                                   textAlign: TextAlign.center,
                                 ),
@@ -106,14 +193,26 @@ class _ProviderOnboardingPageState extends State<ProviderOnboardingPage> {
                                 TextFormField(
                                   controller: _serviceNameCtrl,
                                   decoration: InputDecoration(
-                                    hintText: 'Service name (e.g. Home Cleaning)',
+                                    hintText:
+                                        'Service name (e.g. Home Cleaning)',
                                     filled: true,
-                                    fillColor: cs.surfaceVariant.withOpacity(0.25),
-                                    prefixIcon: Icon(Icons.design_services_outlined, color: cs.primary.withOpacity(0.7)),
-                                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
-                                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide(color: cs.primary, width: 1.4)),
+                                    fillColor:
+                                        cs.surfaceVariant.withOpacity(0.25),
+                                    prefixIcon: Icon(
+                                        Icons.design_services_outlined,
+                                        color: cs.primary.withOpacity(0.7)),
+                                    border: OutlineInputBorder(
+                                        borderRadius: BorderRadius.circular(14),
+                                        borderSide: BorderSide.none),
+                                    focusedBorder: OutlineInputBorder(
+                                        borderRadius: BorderRadius.circular(14),
+                                        borderSide: BorderSide(
+                                            color: cs.primary, width: 1.4)),
                                   ),
-                                  validator: (v) => (v == null || v.trim().isEmpty) ? 'Please enter service name' : null,
+                                  validator: (v) =>
+                                      (v == null || v.trim().isEmpty)
+                                          ? 'Please enter service name'
+                                          : null,
                                 ),
                                 const SizedBox(height: 12),
 
@@ -123,12 +222,22 @@ class _ProviderOnboardingPageState extends State<ProviderOnboardingPage> {
                                   decoration: InputDecoration(
                                     hintText: 'Category (e.g. Cleaning)',
                                     filled: true,
-                                    fillColor: cs.surfaceVariant.withOpacity(0.25),
-                                    prefixIcon: Icon(Icons.category_outlined, color: cs.primary.withOpacity(0.7)),
-                                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
-                                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide(color: cs.primary, width: 1.4)),
+                                    fillColor:
+                                        cs.surfaceVariant.withOpacity(0.25),
+                                    prefixIcon: Icon(Icons.category_outlined,
+                                        color: cs.primary.withOpacity(0.7)),
+                                    border: OutlineInputBorder(
+                                        borderRadius: BorderRadius.circular(14),
+                                        borderSide: BorderSide.none),
+                                    focusedBorder: OutlineInputBorder(
+                                        borderRadius: BorderRadius.circular(14),
+                                        borderSide: BorderSide(
+                                            color: cs.primary, width: 1.4)),
                                   ),
-                                  validator: (v) => (v == null || v.trim().isEmpty) ? 'Please enter category' : null,
+                                  validator: (v) =>
+                                      (v == null || v.trim().isEmpty)
+                                          ? 'Please enter category'
+                                          : null,
                                 ),
                                 const SizedBox(height: 12),
 
@@ -139,12 +248,22 @@ class _ProviderOnboardingPageState extends State<ProviderOnboardingPage> {
                                   decoration: InputDecoration(
                                     hintText: 'Starting price (e.g. 150000)',
                                     filled: true,
-                                    fillColor: cs.surfaceVariant.withOpacity(0.25),
-                                    prefixIcon: Icon(Icons.payments_outlined, color: cs.primary.withOpacity(0.7)),
-                                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
-                                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide(color: cs.primary, width: 1.4)),
+                                    fillColor:
+                                        cs.surfaceVariant.withOpacity(0.25),
+                                    prefixIcon: Icon(Icons.payments_outlined,
+                                        color: cs.primary.withOpacity(0.7)),
+                                    border: OutlineInputBorder(
+                                        borderRadius: BorderRadius.circular(14),
+                                        borderSide: BorderSide.none),
+                                    focusedBorder: OutlineInputBorder(
+                                        borderRadius: BorderRadius.circular(14),
+                                        borderSide: BorderSide(
+                                            color: cs.primary, width: 1.4)),
                                   ),
-                                  validator: (v) => (v == null || v.trim().isEmpty) ? 'Please enter price' : null,
+                                  validator: (v) =>
+                                      (v == null || v.trim().isEmpty)
+                                          ? 'Please enter price'
+                                          : null,
                                 ),
                                 const SizedBox(height: 12),
 
@@ -154,21 +273,33 @@ class _ProviderOnboardingPageState extends State<ProviderOnboardingPage> {
                                   minLines: 3,
                                   maxLines: 5,
                                   decoration: InputDecoration(
-                                    hintText: 'Tell customers about your service',
+                                    hintText:
+                                        'Tell customers about your service',
                                     filled: true,
-                                    fillColor: cs.surfaceVariant.withOpacity(0.25),
-                                    prefixIcon: Icon(Icons.subject_outlined, color: cs.primary.withOpacity(0.7)),
-                                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
-                                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide(color: cs.primary, width: 1.4)),
+                                    fillColor:
+                                        cs.surfaceVariant.withOpacity(0.25),
+                                    prefixIcon: Icon(Icons.subject_outlined,
+                                        color: cs.primary.withOpacity(0.7)),
+                                    border: OutlineInputBorder(
+                                        borderRadius: BorderRadius.circular(14),
+                                        borderSide: BorderSide.none),
+                                    focusedBorder: OutlineInputBorder(
+                                        borderRadius: BorderRadius.circular(14),
+                                        borderSide: BorderSide(
+                                            color: cs.primary, width: 1.4)),
                                   ),
-                                  validator: (v) => (v == null || v.trim().length < 10) ? 'Please write at least 10 characters' : null,
+                                  validator: (v) => (v == null ||
+                                          v.trim().length < 10)
+                                      ? 'Please write at least 10 characters'
+                                      : null,
                                 ),
 
                                 const SizedBox(height: 24),
                                 SizedBox(
                                   height: 52,
                                   child: FilledButton(
-                                    onPressed: _finishRegistration,
+                                    onPressed:
+                                        _isSaving ? null : _finishRegistration,
                                     style: FilledButton.styleFrom(
                                       shape: RoundedRectangleBorder(
                                         borderRadius: BorderRadius.circular(14),
@@ -179,7 +310,13 @@ class _ProviderOnboardingPageState extends State<ProviderOnboardingPage> {
                                       ),
                                       elevation: 1,
                                     ),
-                                    child: const Text('Register'),
+                                    child: _isSaving
+                                        ? const SizedBox(
+                                            width: 20,
+                                            height: 20,
+                                            child: CircularProgressIndicator(),
+                                          )
+                                        : const Text('Register'),
                                   ),
                                 ),
                               ],

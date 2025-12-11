@@ -7,7 +7,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'features/auth/onboarding_page.dart';
 import 'features/auth/login_page.dart';
 import 'features/auth/register_page.dart';
-import 'features/auth/role_selection_page.dart';
 import 'features/auth/provider_onboarding_page.dart';
 import 'features/profile/profile_setup_page.dart';
 import 'features/home/home_page.dart';
@@ -29,37 +28,62 @@ import 'core/state/providers.dart';
 // A root navigator key so observers can read the current GoRouter location
 final GlobalKey<NavigatorState> _rootNavigatorKey = GlobalKey<NavigatorState>();
 
-final appRouterProvider = Provider<GoRouter>((ref) {
-  // capture auth state once so redirect uses a stable value (no ref.read inside redirect)
-  final auth = ref.watch(authStateProvider);
-  final lastRoute = ref.watch(lastRouteProvider);
+/// Internal ChangeNotifier that forwards Riverpod state changes into
+/// ChangeNotifier notifications used by GoRouter's `refreshListenable`.
+class _AuthNotifier extends ChangeNotifier {
+  _AuthNotifier(Ref ref) {
+    // When auth or lastRoute changes, re-notify listeners so GoRouter will
+    // re-run its `redirect` logic. Calling [notifyListeners] here is allowed
+    // because we're inside a subclass of ChangeNotifier.
+    ref.listen<AuthState>(authStateProvider, (_, __) => notifyListeners());
+    ref.listen<String>(lastRouteProvider, (_, __) => notifyListeners());
+  }
+}
 
-  // compute a safe start location: prefer a validated lastRoute for logged-in users
+final authChangeNotifierProvider = Provider<_AuthNotifier>((ref) {
+  return _AuthNotifier(ref);
+});
+
+final appRouterProvider = Provider<GoRouter>((ref) {
+  // Read current values for initialLocation calculation only once when
+  // router is created. The router will re-run redirect when
+  // `authChangeNotifierProvider` notifies listeners.
+  final auth = ref.read(authStateProvider);
+  final lastRoute = ref.read(lastRouteProvider);
+
   final startLocation = (!auth.isAuthenticated)
       ? OnboardingPage.routePath
       : (isValidLastRoute(lastRoute) ? lastRoute : HomePage.routePath);
 
+  final notifier = ref.read(authChangeNotifierProvider);
+
   return GoRouter(
     navigatorKey: _rootNavigatorKey,
-    // use computed, validated start location to avoid invalid-match asserts
     initialLocation: startLocation,
     debugLogDiagnostics: false,
-    // use a single-value stream built from captured auth (provider will rebuild router when auth changes)
-    refreshListenable: GoRouterRefreshStream(Stream.value(auth)),
+    refreshListenable: notifier,
     redirect: (context, state) {
-      // use captured `auth` (no ref.read/watch here)
+      // Use ref.read to obtain current auth & lastRoute values when redirect
+      // is evaluated. This closure captures `ref` so values are fresh.
+      final curAuth = ref.read(authStateProvider);
       final inAuthFlow = state.matchedLocation == LoginPage.routePath ||
           state.matchedLocation == RegisterPage.routePath ||
           state.matchedLocation == ProviderOnboardingPage.routePath;
 
-      if (!auth.isAuthenticated &&
+      if (!curAuth.isAuthenticated &&
           !inAuthFlow &&
           state.matchedLocation != OnboardingPage.routePath) {
         return OnboardingPage.routePath;
       }
-      // No special-case redirect to raw `lastRoute` here to avoid returning
-      // a previously-saved but possibly invalid path. Initial navigation
-      // is handled by `initialLocation` above.
+
+      // If authenticated and currently at onboarding, prefer lastRoute (if valid)
+      if (curAuth.isAuthenticated &&
+          state.matchedLocation == OnboardingPage.routePath) {
+        final saved = ref.read(lastRouteProvider);
+        if (isValidLastRoute(saved)) return saved;
+        return HomePage.routePath;
+      }
+
       return null;
     },
     observers: [
@@ -73,9 +97,6 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
           path: RegisterPage.routePath,
           builder: (_, __) => const RegisterPage()),
-      GoRoute(
-          path: RoleSelectionPage.routePath,
-          builder: (_, __) => const RoleSelectionPage()),
       GoRoute(
           path: ProviderOnboardingPage.routePath,
           builder: (_, __) => const ProviderOnboardingPage()),

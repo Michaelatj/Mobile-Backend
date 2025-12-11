@@ -7,6 +7,7 @@ import '../../core/models/booking.dart'; // use Booking + status
 import '../../core/models/service_provider.dart'; // to map provider infoS
 import '../../core/database/booking_dao.dart';
 import '../../core/database/provider_dao.dart';
+import '../../core/services/firebase_analytics_nonblocking.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 class OrdersPage extends ConsumerStatefulWidget {
@@ -89,12 +90,26 @@ class _OrdersPageState extends ConsumerState<OrdersPage>
   }
 
   Future<void> _cancelOrder(OrderItem order) async {
-    // BookingDao.updateBookingStatus sekarang menerima BookingStatus
+    final user = ref.read(authStateProvider).user;
+
+    // 1. Fire-and-forget analytics (non-blocking)
+    FirebaseAnalyticsNonBlocking.logBookingCanceledEvent(
+      userId: user?.id ?? 'unknown',
+      bookingId: order.id,
+      providerId: order
+          .id, // order.providerId may not be available; use order.id as fallback
+      cancelReason: 'user_initiated',
+    );
+
+    // 2. Update booking status (must complete before UI refresh)
     await BookingDao.updateBookingStatus(order.id, BookingStatus.cancelled);
     if (!mounted) return;
+
+    // 3. Refresh UI synchronously after DB update
     setState(() {
       _futureOrders = _loadOrders();
     });
+
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Pesanan berhasil dibatalkan')),
     );

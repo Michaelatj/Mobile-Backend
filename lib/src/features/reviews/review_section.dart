@@ -33,8 +33,8 @@ class _ReviewSectionState extends ConsumerState<ReviewSection> {
   Future<List<Review>> _loadReviews() {
     final pid = widget.providerId;
     // remote-first, jika error fallback ke local DB
-    return ReviewRepository.fetchReviews(pid)
-        .catchError((_) => ReviewDao.getReviewsByProvider(pid));
+    return ReviewRepository.fetchReviews(pid);
+    // .catchError((_) => ReviewDao.getReviewsByProvider(pid));
   }
 
   Future<void> _syncRating() async {
@@ -60,9 +60,14 @@ class _ReviewSectionState extends ConsumerState<ReviewSection> {
       ),
     );
     if (result != null) {
+      // Perform async operations outside setState
       await _syncRating();
-      setState(() => _futureReviews = _loadReviews());
+
+      // Update UI state only after async operations complete
       if (mounted) {
+        setState(() {
+          _futureReviews = _loadReviews();
+        });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
               content: Text(
@@ -90,16 +95,34 @@ class _ReviewSectionState extends ConsumerState<ReviewSection> {
     );
     if (ok == true) {
       try {
-        await ReviewDao.deleteReview(r.id);
+        debugPrint(
+            '[ReviewSection._confirmDelete] User confirmed delete for review id=${r.id}, providerId=${r.providerId}');
+
+        // Perform async operations outside setState: delete remotely then locally
+        await ReviewRepository.deleteReview(r.id);
+        debugPrint(
+            '[ReviewSection._confirmDelete] ReviewRepository.deleteReview completed for id=${r.id}');
+
         await _syncRating();
-        setState(() => _futureReviews = _loadReviews());
-        if (mounted)
+        debugPrint('[ReviewSection._confirmDelete] Rating synced after delete');
+
+        // Update UI state only after async operations complete
+        if (mounted) {
+          setState(() {
+            _futureReviews = _loadReviews();
+          });
+          debugPrint(
+              '[ReviewSection._confirmDelete] UI state updated and reviews reloaded');
           ScaffoldMessenger.of(context)
               .showSnackBar(const SnackBar(content: Text('Ulasan dihapus')));
+        }
       } catch (e) {
-        if (mounted)
+        debugPrint(
+            '[ReviewSection._confirmDelete] ERROR deleting review id=${r.id}: $e, stacktrace: ${StackTrace.current}');
+        if (mounted) {
           ScaffoldMessenger.of(context)
               .showSnackBar(SnackBar(content: Text('Gagal hapus: $e')));
+        }
       }
     }
   }

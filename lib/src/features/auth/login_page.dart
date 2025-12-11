@@ -2,10 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import '../../core/services/firebase_analytics_nonblocking.dart';
 import '../../core/state/auth_state.dart';
-import '../../core/database/user_dao.dart';
 import '../../core/services/firebase_analytics_service.dart';
-import 'role_selection_page.dart';
+import '../../core/services/user_api_service.dart' as api_service;
+import '../../core/models/user_role.dart';
+import '../home/home_page.dart';
+import '../partner/partner_dashboard_page.dart';
 
 class LoginPage extends ConsumerStatefulWidget {
   static const routePath = '/auth/login';
@@ -22,6 +26,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
   bool _isGoogleLoading = false;
   bool _isFacebookLoading = false;
   bool _rememberMe = false;
+  bool _isLoading = false;
 
   @override
   void initState() {
@@ -55,6 +60,97 @@ class _LoginPageState extends ConsumerState<LoginPage> {
     }
   }
 
+  Future<void> _handleLogin() async {
+    // Validate form (only checks non-empty fields)
+    if (!_formKey.currentState!.validate()) return;
+
+    final email = _email.text.trim();
+    final password = _password.text;
+
+    setState(() => _isLoading = true);
+    try {
+      // 1. Sign in via Firebase Auth
+      // Firebase will validate: email format, credentials correctness
+      final userCredential = await FirebaseAuth.instance
+          .signInWithEmailAndPassword(email: email, password: password);
+      final firebaseUser = userCredential.user!;
+
+      // 2. Fetch API profile (if exists) to get API id and profile fields
+      final apiUser = await api_service.UserApiService.getUserByEmail(email);
+
+      // Build AppUser (model) from API if available, otherwise fallback to firebase info
+      final appUser = apiUser != null
+          ? AppUser(
+              id: apiUser['id'] as String? ?? firebaseUser.uid,
+              name: apiUser['name'] as String? ??
+                  (firebaseUser.displayName ?? 'Pengguna'),
+              role: (apiUser['role'] as String?)?.toLowerCase() == 'provider'
+                  ? UserRole.provider
+                  : UserRole.customer,
+              photoUrl: apiUser['photoUrl'] as String?,
+              locationLabel: apiUser['locationLabel'] as String?,
+            )
+          : AppUser(
+              id: firebaseUser.uid,
+              name: firebaseUser.displayName ?? 'Pengguna',
+              role: UserRole.customer,
+            );
+
+      // 3. Persist session and update app auth state
+      final auth = ref.read(authStateProvider.notifier);
+      await auth.loginWithAppUser(appUser);
+
+      // 4. Save remember me preference
+      await _saveRememberMe();
+
+      // 5. Non-blocking analytics
+      FirebaseAnalyticsNonBlocking.logLoginEvent(
+        userId: firebaseUser.uid,
+        email: firebaseUser.email ?? email,
+        loginMethod: 'email',
+      );
+
+      if (mounted) {
+        // Navigate based on role: providers land on partner dashboard
+        final target = appUser.role == UserRole.provider
+            ? PartnerDashboardPage.routePath
+            : HomePage.routePath;
+        context.go(target);
+      }
+    } on FirebaseAuthException catch (e) {
+      String message;
+      switch (e.code) {
+        case 'invalid-email':
+          message = 'Format email tidak valid.';
+          break;
+        case 'user-not-found':
+          message = 'Email tidak terdaftar. Silakan daftar dulu.';
+          break;
+        case 'wrong-password':
+          message = 'Password salah. Coba lagi.';
+          break;
+        case 'user-disabled':
+          message = 'Akun dinonaktifkan. Hubungi support.';
+          break;
+        case 'too-many-requests':
+          message = 'Terlalu banyak percobaan. Coba lagi nanti.';
+          break;
+        default:
+          message = e.message ?? 'Gagal login.';
+      }
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(message)));
+    } catch (e) {
+      debugPrint('ERROR: Login failed: $e');
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Gagal login: $e')));
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
   @override
   void dispose() {
     _email.dispose();
@@ -64,7 +160,6 @@ class _LoginPageState extends ConsumerState<LoginPage> {
 
   @override
   Widget build(BuildContext context) {
-    final auth = ref.read(authStateProvider.notifier);
     final cs = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
 
@@ -215,44 +310,16 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                                               fontSize: 16,
                                             ),
                                           ),
-                                          onPressed: () async {
-                                            if (_formKey.currentState!
-                                                .validate()) {
-                                              await _saveRememberMe();
-                                              // check DB for user
-                                              final found =
-                                                  await UserDao.findUser(
-                                                      _email.text.trim(),
-                                                      _password.text);
-                                              if (found == null) {
-                                                ScaffoldMessenger.of(context)
-                                                    .showSnackBar(const SnackBar(
-                                                        content: Text(
-                                                            'Email atau password salah')));
-                                                return;
-                                              }
-
-                                              // Log analytics: button login clicked
-                                              final userId =
-                                                  found['id'] as String? ??
-                                                      'unknown';
-                                              await FirebaseAnalyticsService
-                                                  .logLoginEvent(
-                                                userId: userId,
-                                                loginMethod: 'email',
-                                              );
-
-                                              // Successful login: build AppUser and persist via auth controller
-                                              await auth.loginWithEmail(
-                                                  _email.text.trim(),
-                                                  _password.text);
-                                              // navigate to home
-                                              if (mounted)
-                                                context.go(RoleSelectionPage
-                                                    .routePath);
-                                            }
-                                          },
-                                          child: const Text('Log In'),
+                                          onPressed:
+                                              _isLoading ? null : _handleLogin,
+                                          child: _isLoading
+                                              ? const SizedBox(
+                                                  width: 20,
+                                                  height: 20,
+                                                  child:
+                                                      CircularProgressIndicator(),
+                                                )
+                                              : const Text('Log In'),
                                         ),
                                       ),
                                       const SizedBox(height: 24),
@@ -272,6 +339,9 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                                                           _isGoogleLoading =
                                                               true);
                                                       try {
+                                                        final auth = ref.read(
+                                                            authStateProvider
+                                                                .notifier);
                                                         await auth
                                                             .loginWithGoogle();
 
@@ -288,9 +358,19 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                                                         );
 
                                                         if (mounted) {
-                                                          context.go(
-                                                              RoleSelectionPage
-                                                                  .routePath);
+                                                          final authState =
+                                                              ref.read(
+                                                                  authStateProvider);
+                                                          final target = authState
+                                                                      .user
+                                                                      ?.role ==
+                                                                  UserRole
+                                                                      .provider
+                                                              ? PartnerDashboardPage
+                                                                  .routePath
+                                                              : HomePage
+                                                                  .routePath;
+                                                          context.go(target);
                                                         }
                                                       } finally {
                                                         if (mounted) {
@@ -314,6 +394,9 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                                                           _isFacebookLoading =
                                                               true);
                                                       try {
+                                                        final auth = ref.read(
+                                                            authStateProvider
+                                                                .notifier);
                                                         await auth
                                                             .loginWithFacebook();
 
@@ -331,9 +414,19 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                                                         );
 
                                                         if (mounted) {
-                                                          context.go(
-                                                              RoleSelectionPage
-                                                                  .routePath);
+                                                          final authState =
+                                                              ref.read(
+                                                                  authStateProvider);
+                                                          final target = authState
+                                                                      .user
+                                                                      ?.role ==
+                                                                  UserRole
+                                                                      .provider
+                                                              ? PartnerDashboardPage
+                                                                  .routePath
+                                                              : HomePage
+                                                                  .routePath;
+                                                          context.go(target);
                                                         }
                                                       } finally {
                                                         if (mounted) {
@@ -369,7 +462,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                     color: cs.primary.withOpacity(0.7),
                   ),
                   children: [
-                    const TextSpan(text: 'Don’t have an account? '),
+                    const TextSpan(text: "Don't have an account? "),
                     WidgetSpan(
                       alignment: PlaceholderAlignment.middle,
                       child: InkWell(

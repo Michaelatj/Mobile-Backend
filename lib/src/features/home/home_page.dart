@@ -597,7 +597,7 @@ class _HomePageState extends ConsumerState<HomePage> {
                 ],
               ),
             ),
-            
+
             OutlinedButton.icon(
               onPressed: _showAddProviderDialog,
               icon: const Icon(Icons.add, size: 18),
@@ -744,7 +744,7 @@ class _ProviderCard extends StatelessWidget {
           borderRadius: BorderRadius.circular(20),
           // pass provider id to detail page route
           onTap: () =>
-              context.go('${ProviderDetailPage.routeBase}/${provider.id}'),
+              context.push('${ProviderDetailPage.routeBase}/${provider.id}'),
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: Column(
@@ -991,7 +991,7 @@ class _ProviderCard extends StatelessWidget {
                         const SizedBox(width: 8),
                         // View Detail Button
                         FilledButton(
-                          onPressed: () => context.go(
+                          onPressed: () => context.push(
                               '${ProviderDetailPage.routeBase}/${provider.id}'), // pass provider id to detail page route
                           style: FilledButton.styleFrom(
                             padding: const EdgeInsets.symmetric(

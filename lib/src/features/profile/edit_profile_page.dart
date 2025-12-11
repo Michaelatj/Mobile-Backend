@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../../core/state/auth_state.dart';
 import '../../core/services/firebase_analytics_service.dart';
+import '../../core/services/user_api_service.dart';
 import 'profile_page.dart';
 
 class EditProfilePage extends ConsumerStatefulWidget {
@@ -108,27 +110,81 @@ class _EditProfilePageState extends ConsumerState<EditProfilePage> {
           const SizedBox(height: 20),
           FilledButton(
             onPressed: () async {
-              await ref.read(authStateProvider.notifier).updateProfile(
-                    name: _name.text,
-                    locationLabel: _location.text,
-                    photoUrl: _photoUrl.text,
-                  );
-              // Analytics: profile edit
-              try {
-                final userId =
-                    ref.read(authStateProvider).user?.id ?? 'unknown';
-                await FirebaseAnalyticsService.logProfileEditEvent(
-                  userId: userId,
-                  fieldChanged: 'profile',
-                  oldValue: '',
-                  newValue: _name.text,
+              final user = ref.read(authStateProvider).user;
+              if (user == null) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Tidak login')),
                 );
-              } catch (_) {}
-              // navigate after frame to avoid triggering router during provider change notification
-              if (!mounted) return;
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (context.mounted) context.go(ProfilePage.routePath);
-              });
+                return;
+              }
+
+              final isLoading = ValueNotifier<bool>(false);
+
+              // Perform all async operations before updating state
+              try {
+                isLoading.value = true;
+
+                // 1. Update MockAPI (PUT /users/{id})
+                await UserApiService.updateUser(
+                  id: user.id,
+                  name: _name.text,
+                  photoUrl:
+                      _photoUrl.text.trim().isEmpty ? null : _photoUrl.text,
+                  locationLabel:
+                      _location.text.trim().isEmpty ? null : _location.text,
+                );
+
+                // 2. Update Firebase (displayName, photoURL)
+                final firebaseUser = FirebaseAuth.instance.currentUser;
+                if (firebaseUser != null) {
+                  await firebaseUser.updateDisplayName(_name.text);
+                  if (_photoUrl.text.trim().isNotEmpty) {
+                    await firebaseUser.updatePhotoURL(_photoUrl.text.trim());
+                  }
+                }
+
+                // 3. Update local auth state via Riverpod
+                await ref.read(authStateProvider.notifier).updateProfile(
+                      name: _name.text,
+                      locationLabel:
+                          _location.text.trim().isEmpty ? null : _location.text,
+                      photoUrl:
+                          _photoUrl.text.trim().isEmpty ? null : _photoUrl.text,
+                    );
+
+                // 4. Log analytics (non-blocking, so don't await)
+                try {
+                  await FirebaseAnalyticsService.logProfileEditEvent(
+                    userId: user.id,
+                    fieldChanged: 'profile',
+                    oldValue: user.name,
+                    newValue: _name.text,
+                  );
+                } catch (_) {
+                  // silently ignore analytics errors
+                }
+
+                if (!mounted) return;
+
+                // 5. Show success and navigate
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Profil berhasil diperbarui')),
+                );
+
+                // navigate after frame to avoid triggering router during provider change notification
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (context.mounted) context.go(ProfilePage.routePath);
+                });
+              } catch (e) {
+                if (!mounted) return;
+                debugPrint('ERROR: Failed to update profile: $e');
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Gagal perbarui profil: $e')),
+                );
+              } finally {
+                isLoading.value = false;
+              }
             },
             child: const Text('Simpan'),
           ),

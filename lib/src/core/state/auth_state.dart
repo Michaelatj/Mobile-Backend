@@ -157,6 +157,12 @@ class AuthController extends StateNotifier<AuthState> {
     await _persistSession(isAuth: true, user: user);
   }
 
+  /// Public helper to set auth state from an AppUser (used after Firebase sign-in)
+  Future<void> loginWithAppUser(AppUser appUser) async {
+    state = AuthState(isAuthenticated: true, user: appUser);
+    await _persistSession(isAuth: true, user: appUser);
+  }
+
   void chooseRole(UserRole role) {
     final user = state.user;
     if (user != null) {

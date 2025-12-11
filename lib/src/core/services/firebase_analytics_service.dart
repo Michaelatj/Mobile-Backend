@@ -2,6 +2,21 @@ import 'package:firebase_analytics/firebase_analytics.dart';
 
 /// Service untuk mengirim event ke Firebase Analytics
 /// Digunakan untuk tracking user behavior dan button clicks
+///
+/// ==================== DEBUG MODE SETUP ====================
+/// To verify events in Firebase Console DebugView on Android:
+///
+/// 1. Connect device via USB with Android Studio
+/// 2. In terminal, run:
+///    adb shell setprop debug.firebase.analytics.app com.example.bantuin_silvani
+/// 3. In Android Studio Logcat, search for: "DEBUG: Analytics event sent"
+/// 4. Open Firebase Console → Analytics → DebugView tab
+///    - Events should appear within 5-10 seconds
+/// 5. When done debugging, disable debug mode:
+///    adb shell setprop debug.firebase.analytics.app .
+///
+/// Note: Non-debug mode events appear in Analytics → Events tab after ~1 hour delay.
+/// ============================================================
 class FirebaseAnalyticsService {
   static final FirebaseAnalytics _analytics = FirebaseAnalytics.instance;
 

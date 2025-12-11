@@ -550,7 +550,7 @@ class ProfilePage extends ConsumerWidget {
   }
 
   void _showLogoutDialog(BuildContext context, WidgetRef ref) {
-    showDialog(
+    showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
@@ -567,24 +567,23 @@ class ProfilePage extends ConsumerWidget {
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context),
+              onPressed: () => Navigator.pop(context, false),
               child: const Text('Batal')),
           FilledButton(
-            onPressed: () async {
-              Navigator.pop(context);
-              try {
-                final userId =
-                    ref.read(authStateProvider).user?.id ?? 'unknown';
-                await FirebaseAnalyticsService.logLogoutEvent(userId: userId);
-              } catch (_) {}
-              ref.read(authStateProvider.notifier).logout();
-            },
+            onPressed: () => Navigator.pop(context, true),
             style: FilledButton.styleFrom(
                 backgroundColor: Theme.of(context).colorScheme.error),
             child: const Text('Keluar'),
           ),
         ],
       ),
-    );
+    ).then((confirmed) async {
+      if (confirmed != true) return;
+      try {
+        final userId = ref.read(authStateProvider).user?.id ?? 'unknown';
+        await FirebaseAnalyticsService.logLogoutEvent(userId: userId);
+      } catch (_) {}
+      ref.read(authStateProvider.notifier).logout();
+    });
   }
 }
