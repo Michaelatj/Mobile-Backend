@@ -2,7 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import '../../core/models/user.dart';
+import '../../core/services/firestore_service.dart';
 import '../../core/state/auth_state.dart';
+import '../../core/state/user_provider.dart';
 import '../../core/services/firebase_analytics_service.dart';
 import '../../core/services/user_api_service.dart';
 import 'profile_page.dart';
@@ -135,7 +138,7 @@ class _EditProfilePageState extends ConsumerState<EditProfilePage> {
                       _location.text.trim().isEmpty ? null : _location.text,
                 );
 
-                // 2. Update Firebase (displayName, photoURL)
+                // 2. Update Firebase Auth (displayName, photoURL)
                 final firebaseUser = FirebaseAuth.instance.currentUser;
                 if (firebaseUser != null) {
                   await firebaseUser.updateDisplayName(_name.text);
@@ -144,7 +147,18 @@ class _EditProfilePageState extends ConsumerState<EditProfilePage> {
                   }
                 }
 
-                // 3. Update local auth state via Riverpod
+                // 3. Update Firestore database
+                final appUser = AppUser(
+                  id: user.id,
+                  name: _name.text,
+                  email: user.email, // assuming we keep the existing email
+                  phoneNumber: user.phoneNumber, // assuming we keep existing phone
+                  avatarUrl: _photoUrl.text.trim().isEmpty ? null : _photoUrl.text,
+                );
+                
+                await firestoreService.updateUser(appUser);
+
+                // 4. Update local auth state via Riverpod
                 await ref.read(authStateProvider.notifier).updateProfile(
                       name: _name.text,
                       locationLabel:
@@ -153,7 +167,7 @@ class _EditProfilePageState extends ConsumerState<EditProfilePage> {
                           _photoUrl.text.trim().isEmpty ? null : _photoUrl.text,
                     );
 
-                // 4. Log analytics (non-blocking, so don't await)
+                // 5. Log analytics (non-blocking, so don't await)
                 try {
                   await FirebaseAnalyticsService.logProfileEditEvent(
                     userId: user.id,
@@ -167,7 +181,7 @@ class _EditProfilePageState extends ConsumerState<EditProfilePage> {
 
                 if (!mounted) return;
 
-                // 5. Show success and navigate
+                // 6. Show success and navigate
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('Profil berhasil diperbarui')),
                 );
