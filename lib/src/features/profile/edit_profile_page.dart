@@ -6,6 +6,7 @@ import '../../core/state/auth_state.dart';
 import '../../core/services/firebase_analytics_service.dart';
 import '../../core/services/user_api_service.dart';
 import 'profile_page.dart';
+import '../../core/services/firestore_service.dart';
 
 class EditProfilePage extends ConsumerStatefulWidget {
   static const routePath = '/profile/edit';
@@ -125,17 +126,15 @@ class _EditProfilePageState extends ConsumerState<EditProfilePage> {
               try {
                 isLoading.value = true;
 
-                // 1. Update MockAPI (PUT /users/{id})
-                await UserApiService.updateUser(
-                  id: user.id,
+               // 1. UPDATE KE FIRESTORE 🔥
+                await FirestoreService.updateUserProfile(
+                  uid: user.id,
                   name: _name.text,
-                  photoUrl:
-                      _photoUrl.text.trim().isEmpty ? null : _photoUrl.text,
-                  locationLabel:
-                      _location.text.trim().isEmpty ? null : _location.text,
+                  locationLabel: _location.text.trim().isEmpty ? null : _location.text,
+                  photoUrl: _photoUrl.text.trim().isEmpty ? null : _photoUrl.text,
                 );
 
-                // 2. Update Firebase (displayName, photoURL)
+                // 2. Update Firebase Auth Profile (untuk nama & foto bawaan)
                 final firebaseUser = FirebaseAuth.instance.currentUser;
                 if (firebaseUser != null) {
                   await firebaseUser.updateDisplayName(_name.text);
@@ -144,13 +143,11 @@ class _EditProfilePageState extends ConsumerState<EditProfilePage> {
                   }
                 }
 
-                // 3. Update local auth state via Riverpod
+                // 3. Update local state Riverpod agar UI langsung berubah
                 await ref.read(authStateProvider.notifier).updateProfile(
                       name: _name.text,
-                      locationLabel:
-                          _location.text.trim().isEmpty ? null : _location.text,
-                      photoUrl:
-                          _photoUrl.text.trim().isEmpty ? null : _photoUrl.text,
+                      locationLabel: _location.text.trim().isEmpty ? null : _location.text,
+                      photoUrl: _photoUrl.text.trim().isEmpty ? null : _photoUrl.text,
                     );
 
                 // 4. Log analytics (non-blocking, so don't await)

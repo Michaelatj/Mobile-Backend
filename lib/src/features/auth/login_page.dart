@@ -10,6 +10,7 @@ import '../../core/services/user_api_service.dart' as api_service;
 import '../../core/models/user_role.dart';
 import '../home/home_page.dart';
 import '../partner/partner_dashboard_page.dart';
+import '../../core/services/firestore_service.dart';
 
 class LoginPage extends ConsumerStatefulWidget {
   static const routePath = '/auth/login';
@@ -70,31 +71,35 @@ class _LoginPageState extends ConsumerState<LoginPage> {
     setState(() => _isLoading = true);
     try {
       // 1. Sign in via Firebase Auth
-      // Firebase will validate: email format, credentials correctness
       final userCredential = await FirebaseAuth.instance
           .signInWithEmailAndPassword(email: email, password: password);
       final firebaseUser = userCredential.user!;
 
-      // 2. Fetch API profile (if exists) to get API id and profile fields
-      final apiUser = await api_service.UserApiService.getUserByEmail(email);
+      // 2. AMBIL DATA DARI FIRESTORE 📥
+      final userData = await FirestoreService.getUser(firebaseUser.uid);
 
-      // Build AppUser (model) from API if available, otherwise fallback to firebase info
-      final appUser = apiUser != null
-          ? AppUser(
-              id: apiUser['id'] as String? ?? firebaseUser.uid,
-              name: apiUser['name'] as String? ??
-                  (firebaseUser.displayName ?? 'Pengguna'),
-              role: (apiUser['role'] as String?)?.toLowerCase() == 'provider'
-                  ? UserRole.provider
-                  : UserRole.customer,
-              photoUrl: apiUser['photoUrl'] as String?,
-              locationLabel: apiUser['locationLabel'] as String?,
-            )
-          : AppUser(
-              id: firebaseUser.uid,
-              name: firebaseUser.displayName ?? 'Pengguna',
-              role: UserRole.customer,
-            );
+      // Default role jika data belum ada di Firestore (misal user lama)
+      UserRole role = UserRole.customer;
+      String name = firebaseUser.displayName ?? 'Pengguna';
+      String? photoUrl = firebaseUser.photoURL;
+      String? locationLabel;
+
+      if (userData != null) {
+        final roleString = userData['role'] as String? ?? 'customer';
+        role = roleString == 'provider' ? UserRole.provider : UserRole.customer;
+        name = userData['name'] as String? ?? name;
+        photoUrl = userData['photoUrl'] as String? ?? photoUrl;
+        locationLabel = userData['locationLabel'] as String?;
+      }
+
+      // 3. Update App State (Riverpod)
+      final appUser = AppUser(
+        id: firebaseUser.uid,
+        name: name,
+        role: role,
+        photoUrl: photoUrl,
+        locationLabel: locationLabel,
+      );
 
       // 3. Persist session and update app auth state
       final auth = ref.read(authStateProvider.notifier);

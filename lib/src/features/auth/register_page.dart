@@ -8,6 +8,8 @@ import '../../core/database/user_dao.dart';
 import '../../core/services/user_api_service.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../../core/services/firebase_analytics_nonblocking.dart';
+import '../../core/services/firestore_service.dart';
+import 'package:cloud_firestore/cloud_firestore.dart'; // <--- Add this line!
 
 class RegisterPage extends ConsumerStatefulWidget {
   static const routePath = '/auth/register';
@@ -39,127 +41,152 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
   }
 
   Future<void> _handleRegisterCustomer() async {
-    // First, basic non-empty form validation
-    if (!_formKey.currentState!.validate()) return;
+  // 1. Basic Form Validation
+  if (!_formKey.currentState!.validate()) return;
 
-    // Then run sequential client-side validations (email format -> password strength -> password match)
-    final email = _email.text.trim();
-    final password = _password.text;
-    final confirmPassword = _confirmPassword.text;
-    final fullname =
-        _fullName.text.trim().isEmpty ? 'Pengguna' : _fullName.text.trim();
+  // 2. Get values
+  final email = _email.text.trim();
+  final password = _password.text;
+  final confirmPassword = _confirmPassword.text;
+  final fullname = _fullName.text.trim().isEmpty ? 'Pengguna' : _fullName.text.trim();
 
-    // 1) Email format check (client-side quick check). Firebase still enforces full email validity.
-    final emailRegex =
-        RegExp(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$');
-    if (!emailRegex.hasMatch(email)) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Format email tidak sesuai.')),
-      );
-      return;
-    }
-
-    // 2) Password strength (minimum length)
-    if (password.length < 6) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('Password terlalu pendek (min 6 karakter).')),
-      );
-      return;
-    }
-
-    // 3) Password confirmation
-    if (password != confirmPassword) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Passwords do not match')),
-      );
-      return;
-    }
-
-    setState(() => _isLoading = true);
-    try {
-      // Firebase-first: create Firebase user first
-      // Firebase will validate: email format, password strength, email uniqueness
-      final userCredential = await FirebaseAuth.instance
-          .createUserWithEmailAndPassword(email: email, password: password);
-      final firebaseUser = userCredential.user!;
-      await firebaseUser.updateDisplayName(fullname);
-
-      // Create on MockAPI and include firebaseUid
-      final apiUser = await UserApiService.createUser(
-        name: fullname,
-        email: email,
-        role: _selectedRole,
-        firebaseUid: firebaseUser.uid,
-      );
-
-      // Persist locally (SQLite) for offline fallback (do NOT store plaintext password)
-      final id = apiUser['id'] as String? ??
-          'u_${DateTime.now().millisecondsSinceEpoch}';
-      await UserDao.insertUser({
-        'id': id,
-        'name': fullname,
-        'email': email,
-        'role': _selectedRole,
-        'firebaseUid': firebaseUser.uid,
-        'createdAt': DateTime.now().toIso8601String(),
-      });
-
-      // Non-blocking analytics
-      FirebaseAnalyticsNonBlocking.logLoginEvent(
-        userId: firebaseUser.uid,
-        email: email,
-        loginMethod: 'email-register',
-      );
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Register berhasil. Silakan login.')));
-        context.go(LoginPage.routePath);
-      }
-    } on FirebaseAuthException catch (e) {
-      // Map Firebase error codes to friendly messages
-      String message;
-      switch (e.code) {
-        case 'invalid-email':
-          message = 'Format email tidak valid.';
-          break;
-        case 'weak-password':
-          message = 'Password terlalu pendek (min 6 karakter).';
-          break;
-        case 'email-already-in-use':
-          message = 'Email sudah terdaftar. Silakan login.';
-          break;
-        default:
-          message = e.message ?? 'Gagal mendaftar.';
-      }
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(message)));
-      }
-    } catch (e) {
-      // If API creation failed after Firebase creation, attempt rollback
-      try {
-        final current = FirebaseAuth.instance.currentUser;
-        if (current != null) {
-          await current.delete();
-          debugPrint('DEBUG: Rolled back Firebase user after API failure');
-        }
-      } catch (rollErr) {
-        debugPrint('WARN: Failed to rollback Firebase user: $rollErr');
-      }
-      debugPrint('ERROR: Register unexpected error: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Gagal register: $e')));
-      }
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
+  // 3. Email Regex Validation
+  final emailRegex = RegExp(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$');
+  if (!emailRegex.hasMatch(email)) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Format email tidak sesuai.')),
+    );
+    return;
   }
+
+  // 4. Password Length Validation
+  if (password.length < 6) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Password terlalu pendek (min 6 karakter).')),
+    );
+    return;
+  }
+
+  // 5. Password Match Validation
+  if (password != confirmPassword) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Passwords do not match')),
+    );
+    return;
+  }
+
+  // Start Loading
+  setState(() => _isLoading = true);
+
+  try {
+    print("---- 1. MULAI REGISTER ----");
+
+    // --------------------------
+    // STEP A: Create User (Auth)
+    // --------------------------
+    final userCredential = await FirebaseAuth.instance
+        .createUserWithEmailAndPassword(email: email, password: password);
+    final firebaseUser = userCredential.user!;
+    
+    // Update Display Name
+    await firebaseUser.updateDisplayName(fullname);
+
+    print("---- 2. AUTH BERHASIL: ${firebaseUser.uid} ----");
+
+    // --------------------------
+    // STEP B: Save to Firestore
+    // --------------------------
+    print("---- 3. MENYIMPAN KE FIRESTORE... ----");
+    
+    // We write directly to the 'users' collection
+    await FirebaseFirestore.instance.collection('users').doc(firebaseUser.uid).set({
+      'uid': firebaseUser.uid,
+      'email': email,
+      'name': fullname,
+      'role': _selectedRole, // 'customer'
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+
+    print("---- 4. SUKSES SIMPAN KE FIRESTORE! ----");
+
+    // --------------------------
+    // STEP C: Save to SQLite (Local)
+    // --------------------------
+    final id = firebaseUser.uid; 
+    await UserDao.insertUser({
+      'id': id,
+      'name': fullname,
+      'email': email,
+      'role': _selectedRole,
+      'firebaseUid': firebaseUser.uid,
+      'createdAt': DateTime.now().toIso8601String(),
+    });
+
+    // --------------------------
+    // STEP D: Analytics
+    // --------------------------
+    FirebaseAnalyticsNonBlocking.logLoginEvent(
+      userId: firebaseUser.uid,
+      email: email,
+      loginMethod: 'email-register',
+    );
+
+    // --------------------------
+    // STEP E: Navigate
+    // --------------------------
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Register berhasil. Silakan login.'))
+      );
+      context.go(LoginPage.routePath);
+    }
+
+  } on FirebaseAuthException catch (e) {
+    // Handle specific Firebase Auth errors
+    String message;
+    switch (e.code) {
+      case 'invalid-email':
+        message = 'Format email tidak valid.';
+        break;
+      case 'weak-password':
+        message = 'Password terlalu pendek (min 6 karakter).';
+        break;
+      case 'email-already-in-use':
+        message = 'Email sudah terdaftar. Silakan login.';
+        break;
+      default:
+        message = e.message ?? 'Gagal mendaftar.';
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    }
+  } catch (e) {
+    // Handle General Errors (Including Firestore/Database errors)
+    print("!!!! FATAL ERROR: $e !!!!"); // Check your Debug Console for this!
+    
+    // Rollback: If database failed, delete the auth user so they can try again
+    try {
+      final current = FirebaseAuth.instance.currentUser;
+      if (current != null) {
+        await current.delete();
+        debugPrint('DEBUG: Rolled back Firebase user after failure');
+      }
+    } catch (rollErr) {
+      debugPrint('WARN: Failed to rollback Firebase user: $rollErr');
+    }
+    
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Gagal register: $e'))
+      );
+    }
+  } finally {
+    if (mounted) setState(() => _isLoading = false);
+  }
+}
 
   Future<void> _handleRegisterProvider() async {
     // First, basic non-empty form validation
@@ -201,28 +228,28 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
 
     setState(() => _isLoading = true);
     try {
-      // Create Firebase user first so auth is authoritative
+      // 1. Create User di Firebase Auth
       final userCredential = await FirebaseAuth.instance
           .createUserWithEmailAndPassword(email: email, password: password);
       final firebaseUser = userCredential.user!;
       await firebaseUser.updateDisplayName(fullname);
 
-      // Create or update API user and include firebaseUid (upsert)
-      final apiUser = await UserApiService.createUser(
-        name: fullname,
+      // 2. SIMPAN KE FIRESTORE (Pengganti UserApiService/UserDao lama) 🚀
+      // Kita import FirestoreService yang baru dibuat di atas
+      await FirestoreService.saveUser(
+        uid: firebaseUser.uid,
         email: email,
-        role: 'provider',
-        firebaseUid: firebaseUser.uid,
+        name: fullname,
+        role: _selectedRole,
       );
 
-      // Persist locally (do NOT store plaintext password for provider accounts)
-      final id = apiUser['id'] as String? ??
-          'u_${DateTime.now().millisecondsSinceEpoch}';
+      final id = firebaseUser.uid; 
+      
       await UserDao.insertUser({
         'id': id,
         'name': fullname,
         'email': email,
-        'role': 'provider',
+        'role': _selectedRole, // Sesuaikan dengan variabel role kamu (customer/provider)
         'firebaseUid': firebaseUser.uid,
         'createdAt': DateTime.now().toIso8601String(),
       });

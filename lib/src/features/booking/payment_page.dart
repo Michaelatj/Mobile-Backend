@@ -8,6 +8,10 @@ import '../../core/database/booking_dao.dart';
 import '../../core/state/auth_state.dart';
 import '../../core/models/booking.dart';
 import '../../features/orders/orders_page.dart';
+import 'package:cloud_firestore/cloud_firestore.dart'; 
+import '../../core/services/firestore_service.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import '../../core/services/firebase_analytics_service.dart';
 
 class PaymentPage extends ConsumerStatefulWidget {
   static const routePath = '/booking/payment';
@@ -95,41 +99,73 @@ class _PaymentPageState extends ConsumerState<PaymentPage> {
   }
 
   Future<void> _processPayment() async {
+    // 1. Validasi
     if (_selectedPaymentMethod == null) {
       _showErrorSnackBar('Pilih metode pembayaran terlebih dahulu');
       return;
     }
 
     setState(() => _isProcessing = true);
-    await Future.delayed(const Duration(seconds: 2)); // simulate gateway
-    if (!mounted) return;
-    setState(() => _isProcessing = false);
+    
+    await Future.delayed(const Duration(seconds: 2)); 
 
-    final user = ref.read(authStateProvider).user;
-    if (user == null || _providerIdLocal == null) {
-      _showErrorSnackBar('Data pemesanan tidak lengkap');
+    if (!mounted) return;
+
+    // 👇 PERBAIKAN DI SINI:
+    // Gunakan 'firebaseUser' (dari FirebaseAuth) bukan 'user' (dari Riverpod)
+    // supaya kita bisa akses .email dan .displayName
+    final firebaseUser = FirebaseAuth.instance.currentUser;
+    
+    // Cek kelengkapan data
+    if (firebaseUser == null || _providerIdLocal == null) {
+      setState(() => _isProcessing = false);
+      _showErrorSnackBar('Data pemesanan tidak lengkap (User belum login)');
       return;
     }
 
-    final booking = Booking(
-      id: 'bk_${DateTime.now().millisecondsSinceEpoch}',
-      userId: user.id,
-      providerId: _providerIdLocal!,
-      status: BookingStatus.pending,
-      createdAt: DateTime.now(),
-      date: _scheduledLocal,
-      durationHours: _durationLocal,
-      note: _noteLocal ?? '',
-      estimatedCost: _totalAmountLocal,
-      paymentMethod: _selectedPaymentMethod,
-    );
+    // 2. SIAPKAN FORMAT DATA 📝
+    final newOrderData = {
+      'userId': firebaseUser.uid, // Pakai .uid kalau dari Firebase
+      'userName': firebaseUser.displayName ?? 'Tanpa Nama', // Sekarang aman ✅
+      'userEmail': firebaseUser.email ?? 'Tanpa Email',     // Sekarang aman ✅
+      'providerId': _providerIdLocal,
+      'providerName': _providerNameLocal ?? 'Provider Jasa',
+      'category': 'Umum', 
+      'status': 'pending', 
+      'date': Timestamp.fromDate(_scheduledLocal),
+      'totalAmount': _totalAmountLocal,
+      'services': ['Layanan Jasa'],
+      'invoiceNumber': 'INV-${DateTime.now().millisecondsSinceEpoch}',
+      'paymentMethod': _selectedPaymentMethod,
+      'createdAt': FieldValue.serverTimestamp(),
+    };
 
     try {
-      await BookingDao.insertBooking(booking);
-      ref.invalidate(ordersProvider(user.id));
-      _showSuccessDialog();
+      // 3. KIRIM KE FIRESTORE (Akan membuat collection 'orders' otomatis) 🚀
+      print("Mengirim order ke Firestore...");
+      await FirestoreService.createOrder(newOrderData);
+      
+      // 4. KIRIM KE ANALYTICS (Supaya DebugView Gerak!) 📊
+      await FirebaseAnalyticsService.logBookingSubmitEvent(
+        userId: firebaseUser.uid,
+        providerId: _providerIdLocal!,
+        serviceType: 'Umum',
+        totalAmount: _totalAmountLocal,
+        durationHours: _durationLocal,
+      );
+
+      print("Sukses! Data terkirim ke Firestore & Analytics.");
+
+      if (mounted) {
+        setState(() => _isProcessing = false);
+        _showSuccessDialog();
+      }
     } catch (e) {
-      _showErrorSnackBar('Gagal membuat pesanan: $e');
+      print("Error: $e");
+      if (mounted) {
+        setState(() => _isProcessing = false);
+        _showErrorSnackBar('Gagal: $e');
+      }
     }
   }
 

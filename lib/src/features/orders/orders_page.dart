@@ -9,6 +9,11 @@ import '../../core/database/booking_dao.dart';
 import '../../core/database/provider_dao.dart';
 import '../../core/services/firebase_analytics_nonblocking.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../core/services/firestore_service.dart';
+import 'package:cloud_firestore/cloud_firestore.dart'; // Supaya kenal tipe data 'Timestamp'
+import 'package:firebase_auth/firebase_auth.dart'; // Supaya kenal 'FirebaseAuth'
+
+
 
 class OrdersPage extends ConsumerStatefulWidget {
   static const routePath = '/orders';
@@ -44,36 +49,65 @@ class _OrdersPageState extends ConsumerState<OrdersPage>
     });
   }
 
-  Future<List<OrderItem>> _loadOrders() async {
-    final user = ref.read(authStateProvider).user;
-    final bookings = user == null
-        ? <Booking>[]
-        : await BookingDao.getBookingsByUser(user.id);
-
-    final items = <OrderItem>[];
-    for (final b in bookings) {
-      final ServiceProvider? p =
-          await ProviderDao.getProviderById(b.providerId);
-      items.add(
-        OrderItem(
-          id: b.id,
-          invoiceNumber:
-              'INV-${DateTime.now().year}-${b.id.substring(b.id.length - 4)}',
-          providerName: p?.name ?? 'Penyedia',
-          category: p?.category ?? '-',
-          status: _mapStatus(b.status),
-          date: b.date,
-          time: DateFormat('HH:mm', 'id_ID').format(b.date),
-          totalAmount: b.estimatedCost ?? 0,
-          services: [p?.name ?? 'Layanan'],
-          paymentMethod:
-              b.paymentMethod ?? 'Transfer Bank', // use booking.paymentMethod
-        ),
-      );
+Future<List<OrderItem>> _loadOrders() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      print("❌ User belum login, tidak bisa ambil order.");
+      return [];
     }
-    // sort newest first
-    items.sort((a, b) => b.date.compareTo(a.date));
-    return items;
+
+    print("🔍 Mengambil order untuk User ID: ${user.uid}...");
+
+    try {
+      // PENTING: Perhatikan 'orderBy' dan 'where'
+      // Jika kamu pakai filter + sort, Firebase butuh INDEX.
+      final snapshot = await FirebaseFirestore.instance
+          .collection('orders')
+          .where('userId', isEqualTo: user.uid)
+          //.orderBy('date', descending: true) // 👈 COBA KOMENTAR DULU BARIS INI
+          .get();
+
+      print("✅ Ditemukan ${snapshot.docs.length} dokumen di Firestore.");
+
+      final items = <OrderItem>[];
+
+      for (final doc in snapshot.docs) {
+        final data = doc.data();
+        print("   -> Order ID: ${doc.id}, Status: ${data['status']}");
+
+        // Parsing data (Safety check)
+        final dateTimestamp = data['date'] as Timestamp?;
+        final date = dateTimestamp?.toDate() ?? DateTime.now();
+        
+        // Convert status string ke Enum
+        OrderStatus statusEnum = OrderStatus.pending;
+        final statusStr = data['status'] as String? ?? 'pending';
+        if (statusStr == 'inProgress') statusEnum = OrderStatus.inProgress;
+        else if (statusStr == 'completed') statusEnum = OrderStatus.completed;
+        else if (statusStr == 'cancelled') statusEnum = OrderStatus.cancelled;
+
+        items.add(
+          OrderItem(
+            id: doc.id,
+            invoiceNumber: data['invoiceNumber'] ?? 'INV-???',
+            providerName: data['providerName'] ?? 'Jasa',
+            category: data['category'] ?? 'Umum',
+            status: statusEnum,
+            date: date,
+            time: DateFormat('HH:mm').format(date),
+            totalAmount: (data['totalAmount'] as num?)?.toInt() ?? 0,
+            services: List<String>.from(data['services'] ?? []),
+            paymentMethod: data['paymentMethod'] ?? '-',
+            rating: (data['rating'] as num?)?.toInt(),
+          ),
+        );
+      }
+      return items;
+      
+    } catch (e) {
+      print("🔥 ERROR SAAT AMBIL ORDERS: $e");
+      return [];
+    }
   }
 
   OrderStatus _mapStatus(BookingStatus s) {
@@ -90,29 +124,42 @@ class _OrdersPageState extends ConsumerState<OrdersPage>
   }
 
   Future<void> _cancelOrder(OrderItem order) async {
-    final user = ref.read(authStateProvider).user;
+    // Ambil user untuk analytics (opsional)
+    final user = FirebaseAuth.instance.currentUser;
 
-    // 1. Fire-and-forget analytics (non-blocking)
+    // 1. Fire-and-forget analytics (non-blocking) - TETAP KITA PERTAHANKAN ✅
     FirebaseAnalyticsNonBlocking.logBookingCanceledEvent(
-      userId: user?.id ?? 'unknown',
+      userId: user?.uid ?? 'unknown',
       bookingId: order.id,
-      providerId: order
-          .id, // order.providerId may not be available; use order.id as fallback
+      providerId: order.id, 
       cancelReason: 'user_initiated',
     );
 
-    // 2. Update booking status (must complete before UI refresh)
-    await BookingDao.updateBookingStatus(order.id, BookingStatus.cancelled);
-    if (!mounted) return;
+    try {
+      // 2. UPDATE STATUS DI FIRESTORE ☁️ (Bagian Kuncinya!)
+      // Kita panggil fungsi updateOrderStatus yang sudah kita buat di FirestoreService
+      await FirestoreService.updateOrderStatus(order.id, 'cancelled');
 
-    // 3. Refresh UI synchronously after DB update
-    setState(() {
-      _futureOrders = _loadOrders();
-    });
+      if (!mounted) return;
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Pesanan berhasil dibatalkan')),
-    );
+      // 3. REFRESH UI 🔄
+      // Panggil ulang _loadOrders() supaya aplikasi mengambil data terbaru dari Firestore
+      // Karena statusnya sudah 'cancelled', dia akan otomatis pindah ke tab "Dibatalkan"
+      setState(() {
+        _futureOrders = _loadOrders();
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Pesanan berhasil dibatalkan')),
+      );
+      
+    } catch (e) {
+      print("Gagal cancel: $e");
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Gagal membatalkan: $e')),
+      );
+    }
   }
 
   @override
